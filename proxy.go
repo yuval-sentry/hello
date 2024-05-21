@@ -5,11 +5,12 @@ import (
     "io"
 	"io/ioutil"
 	"net/http"
-    //"net/url"
     "bytes"
     "regexp"
     "compress/gzip"
     "strings"
+    "encoding/json"
+    "os"
 )
 
 const Port = ":8080"
@@ -22,8 +23,19 @@ type RequestTask struct {
     RequestURI string
     Header map[string][]string
     Writer http.ResponseWriter
-    //done chan bool
 }
+
+// type ComponentToDSNMapping struct {
+//     Key string ``
+// }
+
+const configFileName = "config.json" 
+
+type Config struct {
+    Mapping map[string]string `json:"mapping"`
+}
+
+var ComponentToDSNMapping map[string]string
 
 // Channel to forward request details
 var requestChan = make(chan RequestTask)
@@ -121,9 +133,9 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 func worker(id int, tasks <-chan RequestTask) {
     var json string = ""
     var componentName string = ""
-    var componentToDSN = make(map[string]string)
-    componentToDSN["A"] = "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880"
-    componentToDSN["B"] = "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224"
+    //var componentToDSN = make(map[string]string)
+    //componentToDSN["A"] = "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880"
+    //componentToDSN["B"] = "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224"
     //var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
     
     for task := range tasks { 
@@ -173,7 +185,7 @@ func worker(id int, tasks <-chan RequestTask) {
         sentryAuth := getSentryAuth(task.Header)
         
         // constructing a new request url based on component name DSN and sentry auth data
-        targetURL := constructSentryURL(componentToDSN[componentName], sentryAuth)
+        targetURL := constructSentryURL(ComponentToDSNMapping[componentName], sentryAuth)
         
         // Removeing Sentry auth header from the request
         ModifyRequestHeaders(task.Header)
@@ -185,7 +197,33 @@ func worker(id int, tasks <-chan RequestTask) {
     }
 }
 
+func loadConfigFile(configFileName string) {
+    configFile, err := os.Open(configFileName)
+    if err != nil {
+        fmt.Println(err)
+    }
+    defer configFile.Close()
+
+    // Read the file content
+    byteValue, err := ioutil.ReadAll(configFile)
+    if err != nil {
+        fmt.Println("Error reading config file content: ", err)
+    }
+    
+    // Unmarshall the JSON data into struct
+    var config Config
+    err = json.Unmarshal(byteValue, &config)
+    if err != nil {
+        fmt.Println("Config file JSON format is corrupted: ", err)
+    }
+
+    ComponentToDSNMapping = config.Mapping
+}
+
 func main() {
+    // Loading config file
+    loadConfigFile(configFileName)
+    
     //Start worker goroutines
     for i := 0; i < numWorkers; i++ {
         go worker(i, requestChan)
