@@ -5,20 +5,10 @@ import (
     "io"
 	"io/ioutil"
 	"net/http"
-    "net/url"
+    //"net/url"
     "bytes"
     "regexp"
-    //"net/http/httputil"
-    //"context"
-    //"time"
-    //"log"
-	// "encoding/hex"
-	// "errors"
-    // "strconv"
-    //"compress/zlib"
     "compress/gzip"
-	//"encoding/base64"
-    //"encoding/json"
     "strings"
 )
 
@@ -27,7 +17,6 @@ const Port = ":8080"
 type RequestTask struct {
     writer http.ResponseWriter
     request *http.Request
-    //body   []byte
     done chan bool
 }
 
@@ -35,7 +24,7 @@ type RequestTask struct {
 var requestChan = make(chan RequestTask)
 
 // Number of worker goroutines
-const numWorkers = 15
+//const numWorkers = 15
 
 // Tesing Component name to DSN MAP
 //const tagName = "sentry_relay_component"
@@ -52,8 +41,6 @@ func constructSentryURL(dsn string, sentryAuth string) string {
 	sentryVersion := reVersion.FindStringSubmatch(sentryAuth)[1]
 	sentryClient := reClient.FindStringSubmatch(sentryAuth)[1]
 
-    
-    // Split the string based on the "@" symbol
 	var url string = ""
     var publicKey string = ""
     var hostPathProject = ""
@@ -93,20 +80,21 @@ func ModifyRequestHeaders(req *http.Request) {
     }
 }
 
+// Taking the received request object, creating a new request from it and sending it to the target url
 func ForwardRequest(w http.ResponseWriter, req *http.Request, target string) {
-	targetURL, err := url.Parse(target)
-	if err != nil {
-		http.Error(w, "Failed to parse target URL", http.StatusInternalServerError)
-		return
-	}
+	// targetURL, err := url.Parse(target)
+	// if err != nil {
+	// 	http.Error(w, "Failed to parse target URL", http.StatusInternalServerError)
+	// 	return
+	// }
 
     //fmt.Println(targetURL)
 
 	// Modify the request URL to the target URL
-	req.URL.Scheme = targetURL.Scheme
-	req.URL.Host = targetURL.Host
-	req.RequestURI = ""
-	req.Host = targetURL.Host
+	// req.URL.Scheme = targetURL.Scheme
+	// req.URL.Host = targetURL.Host
+	// req.RequestURI = ""
+	// req.Host = targetURL.Host
 
 	// Create a new request based on the original request with the modified headers
 	newReq, err := http.NewRequest(req.Method, target, req.Body)
@@ -117,11 +105,11 @@ func ForwardRequest(w http.ResponseWriter, req *http.Request, target string) {
 	newReq.Header = req.Header
 
 	// Use httputil to copy the body and headers
-	if req.Body != nil {
-		bodyBytes, _ := io.ReadAll(req.Body)
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		newReq.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	}
+	// if req.Body != nil {
+	// 	bodyBytes, _ := io.ReadAll(req.Body)
+	// 	req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// 	newReq.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// }
 
     fmt.Printf("Entire new request object:   ")
     fmt.Printf("%#v\n", newReq)
@@ -154,7 +142,6 @@ func worker(task RequestTask) {
     var componentToDSN = make(map[string]string)
     componentToDSN["A"] = "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880"
     componentToDSN["B"] = "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224"
-    //componentToDSN["B"] = "https://o87286.ingest.us.sentry.io"
     //var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
    
     fmt.Printf("\n\n\n\n\n\nReceived request: %s %s\n", task.request.Method, task.request.URL)
@@ -194,9 +181,9 @@ func worker(task RequestTask) {
         json = string(decompressedData)
     }
 
+    // Extracting the component name from tag `sentry_relay_component`
     re := regexp.MustCompile(componentNamePattern)
     matches := re.FindStringSubmatch(json)
-    
     if len(matches) > 1 {
         // The first submatch (index 1) will be the content of the capturing group
         componentName = matches[1]
@@ -205,11 +192,16 @@ func worker(task RequestTask) {
         fmt.Println("No match found")
     }
 
+    // getting the Sentry Auth Header
     sentryAuth := getSentryAuth(task.request)
+    
+    // constructing a new request url based on component name DSN and sentry auth data
     targetURL := constructSentryURL(componentToDSN[componentName], sentryAuth)
+    
+    // Removeing Sentry auth header from the request
     ModifyRequestHeaders(task.request)
-    header := task.request.Header.Get("X-Sentry-Auth")
-    fmt.Println("checking sentry auth header value", header)
+    
+    // Forwarding the request to the right project
     ForwardRequest(task.writer, task.request, targetURL)
 
     fmt.Printf("\n\n\n\n\n\n\n\n")
