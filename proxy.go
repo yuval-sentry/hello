@@ -15,16 +15,21 @@ import (
 const Port = ":8080"
 
 type RequestTask struct {
-    writer http.ResponseWriter
-    request *http.Request
-    done chan bool
+    Method string
+    URL    string
+    Body   []byte
+    Host string
+    RequestURI string
+    Header map[string][]string
+    Writer http.ResponseWriter
+    //done chan bool
 }
 
 // Channel to forward request details
 var requestChan = make(chan RequestTask)
 
 // Number of worker goroutines
-//const numWorkers = 15
+const numWorkers = 15
 
 // Tesing Component name to DSN MAP
 //const tagName = "sentry_relay_component"
@@ -66,50 +71,32 @@ func constructSentryURL(dsn string, sentryAuth string) string {
     return sentryURL
 }
 
-func getSentryAuth(req *http.Request) string {
-    return req.Header.Get("X-Sentry-Auth")
+func getSentryAuth(header map[string][]string) string {
+    fmt.Println("header[x]", header["X-Sentry-Auth"][0])
+    return header["X-Sentry-Auth"][0]
+    //return header["X-Sentry-Auth"]
 }
 
 // removeHeaders modifies the request to remove specific headers
-func ModifyRequestHeaders(req *http.Request) {
+func ModifyRequestHeaders(header map[string][]string) {
     // List of headers to remove
     headersToRemove := []string{"X-Sentry-Auth"}
 
-    for _, header := range headersToRemove {
-        req.Header.Del(header)
+    for _, key := range headersToRemove {
+        delete(header, key)
     }
 }
 
 // Taking the received request object, creating a new request from it and sending it to the target url
-func ForwardRequest(w http.ResponseWriter, req *http.Request, target string) {
-	// targetURL, err := url.Parse(target)
-	// if err != nil {
-	// 	http.Error(w, "Failed to parse target URL", http.StatusInternalServerError)
-	// 	return
-	// }
-
-    //fmt.Println(targetURL)
-
-	// Modify the request URL to the target URL
-	// req.URL.Scheme = targetURL.Scheme
-	// req.URL.Host = targetURL.Host
-	// req.RequestURI = ""
-	// req.Host = targetURL.Host
-
+func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers map[string][]string) {
+	
 	// Create a new request based on the original request with the modified headers
-	newReq, err := http.NewRequest(req.Method, target, req.Body)
+	newReq, err := http.NewRequest("POST", target, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Failed to create new request", http.StatusInternalServerError)
 		return
 	}
-	newReq.Header = req.Header
-
-	// Use httputil to copy the body and headers
-	// if req.Body != nil {
-	// 	bodyBytes, _ := io.ReadAll(req.Body)
-	// 	req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	// 	newReq.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	// }
+	newReq.Header = headers
 
     fmt.Printf("Entire new request object:   ")
     fmt.Printf("%#v\n", newReq)
@@ -125,111 +112,103 @@ func ForwardRequest(w http.ResponseWriter, req *http.Request, target string) {
     fmt.Println("Forwarded request response", resp)
 	defer resp.Body.Close()
 
-	// Copy the response headers and body to the original response writer
-	// for key, values := range resp.Header {
-	// 	for _, value := range values {
-	// 		w.Header().Add(key, value)
-	// 	}
-	// }
-	// w.WriteHeader(resp.StatusCode)
-	// io.Copy(w, resp.Body)
+	//Copy the response headers and body to the original response writer
+	// Set the status code to 200 OK
+	w.WriteHeader(http.StatusOK)
 }
 
 // Worker function to process requests
-func worker(task RequestTask) {
+func worker(id int, tasks <-chan RequestTask) {
     var json string = ""
     var componentName string = ""
     var componentToDSN = make(map[string]string)
     componentToDSN["A"] = "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880"
     componentToDSN["B"] = "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224"
     //var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
-   
-    fmt.Printf("\n\n\n\n\n\nReceived request: %s %s\n", task.request.Method, task.request.URL)
+    
+    for task := range tasks { 
+        fmt.Println("Header object: ", task.Header)
 
-    for key, values := range task.request.Header {
-        for _, value := range values {
-            fmt.Printf("\t%s: %s\n", key, value)
+        fmt.Printf("\n\n\n\n\n\nReceived request: %s %s\n", task.Method, task.URL)
+
+        for key, values := range task.Header {
+            for _, value := range values {
+                fmt.Printf("\t%s: %s\n", key, value)
+            }
         }
-    }
 
-    // Read request body
-    body, err := io.ReadAll(task.request.Body)
-    if err != nil {
-        fmt.Println("Failed to read request body", err)
-    }
-    task.request.Body.Close()
-    //fmt.Println("Received body %s\n", string(body))
-
-    reader := bytes.NewReader(body)
-
-    //Create a gzip reader to decompress the data
-    gzipReader, err := gzip.NewReader(reader)
-    //defer gzipReader.Close()
+        // Checking if the body is encrypted
+        reader := bytes.NewReader(task.Body)
+        //Create a gzip reader to decompress the data
+        gzipReader, err := gzip.NewReader(reader)
+        //defer gzipReader.Close()
         if err != nil {
             fmt.Printf("Body received raw, not gzipped")
-            fmt.Printf("Body: %s\n", string(body))
-            json = string(body)
+            fmt.Printf("Body: %s\n", string(task.Body))
+            json = string(task.Body)
             //return
-    } else {
-        // Read the decompressed data
-        decompressedData, err := ioutil.ReadAll(gzipReader)
-        if err != nil {
-            fmt.Println("Error reading decompressed data:", err)
-            //return
+        } else {
+            // Read the decompressed data
+            decompressedData, err := ioutil.ReadAll(gzipReader)
+            if err != nil {
+                fmt.Println("Error reading decompressed data:", err)
+                //return
+            }
+            fmt.Println("Decompressed data:", string(decompressedData))
+            json = string(decompressedData)
         }
-        fmt.Println("Decompressed data:", string(decompressedData))
-        json = string(decompressedData)
+
+        // Extracting the component name from tag `sentry_relay_component`
+        re := regexp.MustCompile(componentNamePattern)
+        matches := re.FindStringSubmatch(json)
+        if len(matches) > 1 {
+            // The first submatch (index 1) will be the content of the capturing group
+            componentName = matches[1]
+            fmt.Println("Extracted value:", componentName)
+        } else {
+            fmt.Println("No match found")
+        }
+
+        // getting the Sentry Auth Header
+        sentryAuth := getSentryAuth(task.Header)
+        
+        // constructing a new request url based on component name DSN and sentry auth data
+        targetURL := constructSentryURL(componentToDSN[componentName], sentryAuth)
+        
+        // Removeing Sentry auth header from the request
+        ModifyRequestHeaders(task.Header)
+        
+        // Forwarding the request to the right project
+        ForwardRequest(task.Writer, targetURL, task.Body, task.Header)
+
+        fmt.Printf("\n\n\n\n\n\n\n\n")
     }
-
-    // Extracting the component name from tag `sentry_relay_component`
-    re := regexp.MustCompile(componentNamePattern)
-    matches := re.FindStringSubmatch(json)
-    if len(matches) > 1 {
-        // The first submatch (index 1) will be the content of the capturing group
-        componentName = matches[1]
-        fmt.Println("Extracted value:", componentName)
-    } else {
-        fmt.Println("No match found")
-    }
-
-    // getting the Sentry Auth Header
-    sentryAuth := getSentryAuth(task.request)
-    
-    // constructing a new request url based on component name DSN and sentry auth data
-    targetURL := constructSentryURL(componentToDSN[componentName], sentryAuth)
-    
-    // Removeing Sentry auth header from the request
-    ModifyRequestHeaders(task.request)
-    
-    // Forwarding the request to the right project
-    ForwardRequest(task.writer, task.request, targetURL)
-
-    fmt.Printf("\n\n\n\n\n\n\n\n")
 }
 
 func main() {
-    // Start worker goroutines
-    // for i := 0; i < numWorkers; i++ {
-    //     go worker(i, requestChan)
-    // }
-
-    go func() {
-        for task := range requestChan {
-            worker(task)
-            task.done <- true
-        }
-    }()
-
+    //Start worker goroutines
+    for i := 0; i < numWorkers; i++ {
+        go worker(i, requestChan)
+    }
 
     // Register handler function for the root URL pattern "/"
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+         // Read request body
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+            fmt.Println("Failed to read request body", http.StatusInternalServerError)
+        }
+        
         task := RequestTask{
-            request: r,
-            writer: w,
-            done: make(chan bool),
+            Method: r.Method,
+            URL:    r.URL.String(),
+            Body:   body,
+            Host:   r.Host,
+            RequestURI: r.RequestURI,
+            Header: r.Header,
+            Writer: w,
         }
         requestChan <- task
-        <-task.done
     })
 
     // Start the HTTP server on "$Port"
