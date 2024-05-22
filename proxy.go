@@ -11,7 +11,7 @@ import (
     "strings"
     "encoding/json"
     "os"
-    "reflect"
+    "net/url"
 )
 
 const Port = ":8080"
@@ -40,8 +40,8 @@ var requestChan = make(chan RequestTask)
 // Number of worker goroutines
 const numWorkers = 15
 
-// Tesing Component name to DSN MAP
-//const tagName = "sentry_relay_component"
+const componentTagName = "sentry_relay_component"
+// other options for this pattern : sentry_relay_component"\s?:\s?"([^"]+) or sentry_relay_component"\s*:\s*"([^"]+)
 const componentNamePattern = `"sentry_relay_component":"([^"]+)"`
 
 // func terminateProcess(exitCode int, message string) {
@@ -49,25 +49,70 @@ const componentNamePattern = `"sentry_relay_component":"([^"]+)"`
 //     os.Exit(exitCode)
 // }
 
+// IsValidURL checks if a given URL string is valid.
+func IsValidURL(testURL string) bool {
+    _, err := url.ParseRequestURI(testURL)
+    if err != nil {
+        fmt.Println("IsValidURL :: " + testURL + " is invalid url ", err)
+    }
+    return err == nil
+}
+
+// func IsValidDSN(testDSN string) bool {
+//     if (!IsValidURL(testDSN)) {
+//         return false
+//     }
+//     // ^https?:\/\/.+@.+\.ingest(\.us)?\.sentry\.io\/[0-9]+$
+//     // ^https://[a-zA-Z0-9]{32}@o[0-9]+\.ingest\.us\.sentry\.io/[0-9]+$
+//     // ^https?:\/\/.+@.+\.ingest(\.us)?\.sentry\.io\/[0-9]+$
+
+// }
+
 func generateSentryURLParams(authHeaderOrRequestURL string) string {
     if (authHeaderOrRequestURL == "") {
         return ""
     }
-    // TODO: check safety
-    reKey := regexp.MustCompile(`sentry_key=([\w]+)`)
-    reVersion := regexp.MustCompile(`sentry_version=([\w]+)`)
-    reClient := regexp.MustCompile(`sentry_client=([\w/.]+)`)
 
-    // TODO: check safety
-    sentryKey := reKey.FindStringSubmatch(authHeaderOrRequestURL)[1]
-    sentryVersion := reVersion.FindStringSubmatch(authHeaderOrRequestURL)[1]
-    sentryClient := reClient.FindStringSubmatch(authHeaderOrRequestURL)[1]
+    var sentryKey string = ""
+    var sentryVersion string = ""
+    var sentryClient string = ""
+    var extractedParam []string
+
+    reKey, err := regexp.Compile(`sentry_key=([\w]+)`)
+    if err != nil {
+        fmt.Println("generateSentryURLParams::Error compiling regex: ", err)
+    } else {
+        extractedParam = reKey.FindStringSubmatch(authHeaderOrRequestURL)
+        if len(extractedParam) > 1 {
+            sentryKey = extractedParam[1]
+        }
+    }
+
+    reVersion, err := regexp.Compile(`sentry_version=([\w]+)`)
+    if err != nil {
+        fmt.Println("generateSentryURLParams::Error compiling regex: ", err)
+    } else {
+        extractedParam = reVersion.FindStringSubmatch(authHeaderOrRequestURL)
+        if len(extractedParam) > 1 {
+            sentryVersion = extractedParam[1]
+        }
+    }
+
+    reClient, err := regexp.Compile(`sentry_client=([\w/.]+)`)
+    if err != nil {
+        fmt.Println("generateSentryURLParams::Error compiling regex: ", err)
+    } else {
+        extractedParam = reClient.FindStringSubmatch(authHeaderOrRequestURL)
+        if len(extractedParam) > 1 {
+            sentryClient = extractedParam[1]
+        }
+    }
 
     return "sentry_version=" + sentryVersion + "&sentry_client=" + sentryClient + "&sentry_secret=" + sentryKey     
 }
 
 func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
-    fmt.Println("Received DSN: ", dsn)
+    fmt.Println("constructSentryURL::Received DSN: ", dsn)
     
     var url string = ""
     var publicKey string = ""
@@ -76,13 +121,24 @@ func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
     var projectId string = ""
     var endPoint string = "envelope" // TODO: Extract endpoint from URL
     
-    // TODO: check safety
     parts := strings.Split(dsn, "//")
-    url = parts[1]
+    if (len(parts) > 1) {
+        url = parts[1]
+    } else {
+        url = dsn
+    }
     parts = strings.Split(url, "@")
+    if len(parts) < 2 {
+        fmt.Println("constructSentryURL::Invalid dsn, missing @")
+        return ""
+    }
     publicKey = parts[0]
     hostPathProject = parts[1]
     parts = strings.Split(hostPathProject, "/")
+    if len(parts) < 2 {
+        fmt.Println("constructSentryURL::Invalid dsn, projectId is missing")
+        return ""
+    }
     hostPath = parts[0]
     projectId = parts[1]
 
@@ -93,7 +149,7 @@ func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
     authQueryParams := generateSentryURLParams(authHeaderOrRequestURL)
     sentryURL = sentryURL + "&" + authQueryParams
 
-    fmt.Println("sentryURL", sentryURL)
+    fmt.Println("constructSentryURL:: return result sentryURL : ", sentryURL)
 
     return sentryURL
 }
@@ -144,25 +200,19 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 	}
     fmt.Println("Forwarded request response", resp)
 	defer resp.Body.Close()
-
-	//Copy the response headers and body to the original response writer
-	// Set the status code to 200 OK
-    // TODO: print out the actual status code.
-	w.WriteHeader(http.StatusOK)
 }
 
 // Worker function to process requests
 func worker(id int, tasks <-chan RequestTask) {
     var json string = ""
     var componentName string = ""
+    // TODO: Check that the default DSN is valid and working
     var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
     var dsn string = defaultDSN
     var targetURL string = ""
     
-    for task := range tasks { 
-        fmt.Println("Header object: ", task.Header)
-
-        fmt.Printf("\n\n\n\n\n\nReceived request: %s %s\n", task.Method, task.URL)
+    for task := range tasks {
+        fmt.Printf("\n\nReceived request: %s %s\n", task.Method, task.URL)
 
         for key, values := range task.Header {
             for _, value := range values {
@@ -174,39 +224,41 @@ func worker(id int, tasks <-chan RequestTask) {
         reader := bytes.NewReader(task.Body)
         //Create a gzip reader to decompress the data
         gzipReader, err := gzip.NewReader(reader)
-        //defer gzipReader.Close()
         if err != nil {
             fmt.Printf("Body received raw, not gzipped")
             fmt.Printf("Body: %s\n", string(task.Body))
             json = string(task.Body)
-            //return
         } else {
             // Read the decompressed data
             decompressedData, err := ioutil.ReadAll(gzipReader)
             if err != nil {
                 fmt.Println("Error reading decompressed data:", err)
-                //return
             }
             fmt.Println("Decompressed data:", string(decompressedData))
             json = string(decompressedData)
         }
+        defer gzipReader.Close()
 
-        // TODO: In case that there is a DSN specified inside that body shall I change it?
+        // TODO: In case that there is a DSN specified inside the body we need to remove that and later on update the new requesrt body 
+        // >>> with the new JSON
 
         // Extracting the component name from tag `sentry_relay_component`
-        re := regexp.MustCompile(componentNamePattern)
-        matches := re.FindStringSubmatch(json)
-        fmt.Printf("matches", matches)
-        fmt.Printf("typeof matches", reflect.TypeOf(matches))
-        if matches != nil && len(matches) > 1 {
-            // The first submatch (index 1) will be the content of the capturing group
-            componentName = matches[1]
-            fmt.Println("Extracted value:", componentName)
-            if (len(ComponentToDSNMapping[componentName]) > 0) {
-                dsn = ComponentToDSNMapping[componentName]
-            }
+        re, err := regexp.Compile(componentNamePattern)
+        if err != nil {
+            fmt.Println("Couldn't compile component name regex matcher " + componentNamePattern + " ", err)
         } else {
-            fmt.Println("No match found")
+            matches := re.FindStringSubmatch(json)
+            if matches != nil && len(matches) > 1 {
+                componentName = matches[1]
+                fmt.Println("Extracted value:", componentName)
+                if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidURL(ComponentToDSNMapping[componentName])) {
+                    dsn = ComponentToDSNMapping[componentName]
+                } else {
+                    fmt.Println("the DSN for component " + componentName + " is missing or invalid")
+                }
+            } else {
+                fmt.Println(componentTagName + " tag doesn't exists")
+            }
         }
         fmt.Println("Past getting the component name")
 
@@ -214,13 +266,18 @@ func worker(id int, tasks <-chan RequestTask) {
         sentryAuth := getSentryAuth(task.Header)
         fmt.Println("Past getSentryAuth")
 
-        // constructing a new request url based on component name DSN and sentry auth data
+        // constructing a new request url based on DSN and sentry auth data
         if sentryAuth == "" {
             targetURL = constructSentryURL(dsn, task.URL)
         } else {
             targetURL = constructSentryURL(dsn, sentryAuth)
         }
         fmt.Println("Past constructSentryURL")
+
+        if !IsValidURL(targetURL) {
+            fmt.Println("targetURL is invalid, dropping request %s %s %s\n", task.Method, task.URL, json)
+            continue
+        }
         
         // Removeing Sentry auth header from the request
         ModifyRequestHeaders(task.Header)
@@ -238,7 +295,7 @@ func loadConfigFile(configFileName string) {
     configFile, err := os.Open(configFileName)
     if err != nil {
         fmt.Println(err)
-        return // and kill
+        return // terminate process?
     }
     defer configFile.Close()
 
@@ -246,7 +303,7 @@ func loadConfigFile(configFileName string) {
     byteValue, err := ioutil.ReadAll(configFile)
     if err != nil {
         fmt.Println("Error reading config file content: ", err)
-        return // and kill
+        return // terminate process?
     }
     
     // Unmarshall the JSON data into struct
@@ -254,7 +311,7 @@ func loadConfigFile(configFileName string) {
     err = json.Unmarshal(byteValue, &config)
     if err != nil {
         fmt.Println("Config file JSON format is corrupt: ", err)
-        return // and kill
+        return // terminate process?
     }
 
     ComponentToDSNMapping = config.Mapping
@@ -262,8 +319,6 @@ func loadConfigFile(configFileName string) {
 
 func main() {
     // TODO: Get default DSN as a required param and validate that it's valid, if not, display an error message and kill the process
-
-
     // Loading config file
     loadConfigFile(configFileName)
     
