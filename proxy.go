@@ -11,6 +11,7 @@ import (
     "strings"
     "encoding/json"
     "os"
+    "reflect"
 )
 
 const Port = ":8080"
@@ -24,10 +25,6 @@ type RequestTask struct {
     Header map[string][]string
     Writer http.ResponseWriter
 }
-
-// type ComponentToDSNMapping struct {
-//     Key string ``
-// }
 
 const configFileName = "config.json" 
 
@@ -47,24 +44,39 @@ const numWorkers = 15
 //const tagName = "sentry_relay_component"
 const componentNamePattern = `"sentry_relay_component":"([^"]+)"`
 
-func constructSentryURL(dsn string, sentryAuth string) string {
-    fmt.Println(sentryAuth)
+// func terminateProcess(exitCode int, message string) {
+//     fmt.Println(message)
+//     os.Exit(exitCode)
+// }
 
+func generateSentryURLParams(authHeaderOrRequestURL string) string {
+    if (authHeaderOrRequestURL == "") {
+        return ""
+    }
+    // TODO: check safety
     reKey := regexp.MustCompile(`sentry_key=([\w]+)`)
-	reVersion := regexp.MustCompile(`sentry_version=([\w]+)`)
-	reClient := regexp.MustCompile(`sentry_client=([\w/.]+)`)
+    reVersion := regexp.MustCompile(`sentry_version=([\w]+)`)
+    reClient := regexp.MustCompile(`sentry_client=([\w/.]+)`)
 
-	sentryKey := reKey.FindStringSubmatch(sentryAuth)[1]
-	sentryVersion := reVersion.FindStringSubmatch(sentryAuth)[1]
-	sentryClient := reClient.FindStringSubmatch(sentryAuth)[1]
+    // TODO: check safety
+    sentryKey := reKey.FindStringSubmatch(authHeaderOrRequestURL)[1]
+    sentryVersion := reVersion.FindStringSubmatch(authHeaderOrRequestURL)[1]
+    sentryClient := reClient.FindStringSubmatch(authHeaderOrRequestURL)[1]
 
-	var url string = ""
+    return "sentry_version=" + sentryVersion + "&sentry_client=" + sentryClient + "&sentry_secret=" + sentryKey     
+}
+
+func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
+    fmt.Println("Received DSN: ", dsn)
+    
+    var url string = ""
     var publicKey string = ""
     var hostPathProject = ""
     var hostPath string = ""
     var projectId string = ""
-    var endPoint string = "envelope"
-
+    var endPoint string = "envelope" // TODO: Extract endpoint from URL
+    
+    // TODO: check safety
     parts := strings.Split(dsn, "//")
     url = parts[1]
     parts = strings.Split(url, "@")
@@ -76,7 +88,10 @@ func constructSentryURL(dsn string, sentryAuth string) string {
 
     baseURI := "https://" + hostPath
 
-    sentryURL := baseURI + "/api/" + projectId + "/" + endPoint + "/?sentry_key=" + publicKey + "&sentry_version=" + sentryVersion + "&sentry_client=" + sentryClient + "&sentry_secret=" + sentryKey
+    sentryURL := baseURI + "/api/" + projectId + "/" + endPoint + "/?sentry_key=" + publicKey
+    
+    authQueryParams := generateSentryURLParams(authHeaderOrRequestURL)
+    sentryURL = sentryURL + "&" + authQueryParams
 
     fmt.Println("sentryURL", sentryURL)
 
@@ -84,9 +99,14 @@ func constructSentryURL(dsn string, sentryAuth string) string {
 }
 
 func getSentryAuth(header map[string][]string) string {
+    if len(header["X-Sentry-Auth"]) == 0 {
+        return ""
+    }
+    if len(header["X-Sentry-Auth"][0]) == 0 {
+        return ""
+    }
     fmt.Println("header[x]", header["X-Sentry-Auth"][0])
     return header["X-Sentry-Auth"][0]
-    //return header["X-Sentry-Auth"]
 }
 
 // removeHeaders modifies the request to remove specific headers
@@ -119,6 +139,7 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 	resp, err := client.Do(newReq)
 	if err != nil {
 		http.Error(w, "Failed to forward request", http.StatusInternalServerError)
+        // TODO: If it was sent for a specific component and failed, retry to the default DSN
 		return
 	}
     fmt.Println("Forwarded request response", resp)
@@ -126,6 +147,7 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 
 	//Copy the response headers and body to the original response writer
 	// Set the status code to 200 OK
+    // TODO: print out the actual status code.
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -133,10 +155,9 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 func worker(id int, tasks <-chan RequestTask) {
     var json string = ""
     var componentName string = ""
-    //var componentToDSN = make(map[string]string)
-    //componentToDSN["A"] = "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880"
-    //componentToDSN["B"] = "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224"
-    //var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
+    var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
+    var dsn string = defaultDSN
+    var targetURL string = ""
     
     for task := range tasks { 
         fmt.Println("Header object: ", task.Header)
@@ -170,28 +191,44 @@ func worker(id int, tasks <-chan RequestTask) {
             json = string(decompressedData)
         }
 
+        // TODO: In case that there is a DSN specified inside that body shall I change it?
+
         // Extracting the component name from tag `sentry_relay_component`
         re := regexp.MustCompile(componentNamePattern)
         matches := re.FindStringSubmatch(json)
-        if len(matches) > 1 {
+        fmt.Printf("matches", matches)
+        fmt.Printf("typeof matches", reflect.TypeOf(matches))
+        if matches != nil && len(matches) > 1 {
             // The first submatch (index 1) will be the content of the capturing group
             componentName = matches[1]
             fmt.Println("Extracted value:", componentName)
+            if (len(ComponentToDSNMapping[componentName]) > 0) {
+                dsn = ComponentToDSNMapping[componentName]
+            }
         } else {
             fmt.Println("No match found")
         }
+        fmt.Println("Past getting the component name")
 
         // getting the Sentry Auth Header
         sentryAuth := getSentryAuth(task.Header)
-        
+        fmt.Println("Past getSentryAuth")
+
         // constructing a new request url based on component name DSN and sentry auth data
-        targetURL := constructSentryURL(ComponentToDSNMapping[componentName], sentryAuth)
+        if sentryAuth == "" {
+            targetURL = constructSentryURL(dsn, task.URL)
+        } else {
+            targetURL = constructSentryURL(dsn, sentryAuth)
+        }
+        fmt.Println("Past constructSentryURL")
         
         // Removeing Sentry auth header from the request
         ModifyRequestHeaders(task.Header)
+        fmt.Println("Past ModifyRequestHeaders")
         
         // Forwarding the request to the right project
         ForwardRequest(task.Writer, targetURL, task.Body, task.Header)
+        fmt.Println("Past ForwardRequest")
 
         fmt.Printf("\n\n\n\n\n\n\n\n")
     }
@@ -201,6 +238,7 @@ func loadConfigFile(configFileName string) {
     configFile, err := os.Open(configFileName)
     if err != nil {
         fmt.Println(err)
+        return // and kill
     }
     defer configFile.Close()
 
@@ -208,19 +246,24 @@ func loadConfigFile(configFileName string) {
     byteValue, err := ioutil.ReadAll(configFile)
     if err != nil {
         fmt.Println("Error reading config file content: ", err)
+        return // and kill
     }
     
     // Unmarshall the JSON data into struct
     var config Config
     err = json.Unmarshal(byteValue, &config)
     if err != nil {
-        fmt.Println("Config file JSON format is corrupted: ", err)
+        fmt.Println("Config file JSON format is corrupt: ", err)
+        return // and kill
     }
 
     ComponentToDSNMapping = config.Mapping
 }
 
 func main() {
+    // TODO: Get default DSN as a required param and validate that it's valid, if not, display an error message and kill the process
+
+
     // Loading config file
     loadConfigFile(configFileName)
     
@@ -250,7 +293,7 @@ func main() {
     })
 
     // Start the HTTP server on "$Port"
-    fmt.Println("Server listening on port 8080" + Port)
+    fmt.Println("Server listening on port " + Port)
     if err := http.ListenAndServe(Port, nil); err != nil {
         fmt.Printf("Failed to start server: %s\n", err)
     }
