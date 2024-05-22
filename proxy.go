@@ -26,7 +26,8 @@ type RequestTask struct {
     Writer http.ResponseWriter
 }
 
-const configFileName = "config.json" 
+var defaultDSN string = ""
+var configFilePath  string = ""
 
 type Config struct {
     Mapping map[string]string `json:"mapping"`
@@ -44,11 +45,6 @@ const componentTagName = "sentry_relay_component"
 // other options for this pattern : sentry_relay_component"\s?:\s?"([^"]+) or sentry_relay_component"\s*:\s*"([^"]+)
 const componentNamePattern = `"sentry_relay_component":"([^"]+)"`
 
-// func terminateProcess(exitCode int, message string) {
-//     fmt.Println(message)
-//     os.Exit(exitCode)
-// }
-
 // IsValidURL checks if a given URL string is valid.
 func IsValidURL(testURL string) bool {
     _, err := url.ParseRequestURI(testURL)
@@ -58,15 +54,20 @@ func IsValidURL(testURL string) bool {
     return err == nil
 }
 
-// func IsValidDSN(testDSN string) bool {
-//     if (!IsValidURL(testDSN)) {
-//         return false
-//     }
-//     // ^https?:\/\/.+@.+\.ingest(\.us)?\.sentry\.io\/[0-9]+$
-//     // ^https://[a-zA-Z0-9]{32}@o[0-9]+\.ingest\.us\.sentry\.io/[0-9]+$
-//     // ^https?:\/\/.+@.+\.ingest(\.us)?\.sentry\.io\/[0-9]+$
-
-// }
+func IsValidDSN(testDSN string) bool {
+    if (!IsValidURL(testDSN)) {
+        return false
+    }
+    // It is safe to use this loose DSN pattern as we already confirmed that this ^^^ is a valid URL
+    matched, err := regexp.MatchString(`^https?:\/\/.+@.+\/[0-9]+$`, testDSN)
+    if err != nil {
+		fmt.Println("IsValidDSN::Error compiling regex:", err)
+	}
+    if !matched {
+        fmt.Println("Invalid DSN: " + testDSN)
+    }
+    return matched
+}
 
 func generateSentryURLParams(authHeaderOrRequestURL string) string {
     if (authHeaderOrRequestURL == "") {
@@ -186,10 +187,6 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 	}
 	newReq.Header = headers
 
-    fmt.Printf("Entire new request object:   ")
-    fmt.Printf("%#v\n", newReq)
-    fmt.Printf("\n\n")
-
 	// Send the modified request to the target server
 	client := &http.Client{}
 	resp, err := client.Do(newReq)
@@ -206,8 +203,6 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 func worker(id int, tasks <-chan RequestTask) {
     var json string = ""
     var componentName string = ""
-    // TODO: Check that the default DSN is valid and working
-    var defaultDSN string = "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896"
     var dsn string = defaultDSN
     var targetURL string = ""
     
@@ -251,7 +246,7 @@ func worker(id int, tasks <-chan RequestTask) {
             if matches != nil && len(matches) > 1 {
                 componentName = matches[1]
                 fmt.Println("Extracted value:", componentName)
-                if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidURL(ComponentToDSNMapping[componentName])) {
+                if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidDSN(ComponentToDSNMapping[componentName])) {
                     dsn = ComponentToDSNMapping[componentName]
                 } else {
                     fmt.Println("the DSN for component " + componentName + " is missing or invalid")
@@ -291,11 +286,11 @@ func worker(id int, tasks <-chan RequestTask) {
     }
 }
 
-func loadConfigFile(configFileName string) {
+func loadConfigFile(configFileName string) bool {
     configFile, err := os.Open(configFileName)
     if err != nil {
         fmt.Println(err)
-        return // terminate process?
+        return false
     }
     defer configFile.Close()
 
@@ -303,7 +298,7 @@ func loadConfigFile(configFileName string) {
     byteValue, err := ioutil.ReadAll(configFile)
     if err != nil {
         fmt.Println("Error reading config file content: ", err)
-        return // terminate process?
+        return false
     }
     
     // Unmarshall the JSON data into struct
@@ -311,17 +306,29 @@ func loadConfigFile(configFileName string) {
     err = json.Unmarshal(byteValue, &config)
     if err != nil {
         fmt.Println("Config file JSON format is corrupt: ", err)
-        return // terminate process?
+        return false
     }
 
     ComponentToDSNMapping = config.Mapping
+    return true
 }
 
 func main() {
-    // TODO: Get default DSN as a required param and validate that it's valid, if not, display an error message and kill the process
-    // Loading config file
-    loadConfigFile(configFileName)
-    
+    if len(os.Args) < 3 {
+        fmt.Println("Missing arguments. <defaultDSN> and <configFilePath> must be provided")
+        os.Exit(1)
+    }
+    if !IsValidDSN(os.Args[1]) { // Or unreachable -> This is a MUST CHECK!!!
+        fmt.Println("Invalid defaultDSN")
+        os.Exit(1)
+    }
+    if !loadConfigFile(os.Args[2]) {
+        fmt.Println("Error loading config file")
+        os.Exit(1)
+    }
+    defaultDSN = os.Args[1]
+    configFilePath = os.Args[2]
+
     //Start worker goroutines
     for i := 0; i < numWorkers; i++ {
         go worker(i, requestChan)

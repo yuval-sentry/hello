@@ -1,8 +1,8 @@
 {
     "mapping": {
-        "default" : "https://efe273e1f9aae6f6f0bc4fb089fab1d7@o87286.ingest.us.sentry.io/4507262272208896",
         "A" : "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880",
         "B" : "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224",
-        "C" : "somekingofaweirdurl"
+        "C" : "somekingofaweirdurl",
+        "D" : "http://www.google.com"
     }
 }
