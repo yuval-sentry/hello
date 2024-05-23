@@ -178,7 +178,8 @@ func ModifyRequestHeaders(header map[string][]string) {
 
 // Taking the received request object, creating a new request from it and sending it to the target url
 func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers map[string][]string) {
-	
+	// TODO: Sometimes an envelope will contain more than one event type, we will probably need to split each event type into a different envelope
+
 	// Create a new request based on the original request with the modified headers
 	newReq, err := http.NewRequest("POST", target, bytes.NewReader(body))
 	if err != nil {
@@ -221,6 +222,7 @@ func worker(id int, tasks <-chan RequestTask) {
         // Checking if the body is encrypted
         reader := bytes.NewReader(task.Body)
         //Create a gzip reader to decompress the data
+        // TODO: support more compression types and encapsulate this entire logic in a separate function
         gzipReader, err := gzip.NewReader(reader)
         if err != nil {
             fmt.Printf("Body received raw, not gzipped")
@@ -339,7 +341,7 @@ func main() {
         fmt.Println("Missing arguments. <defaultDSN> and <configFilePath> must be provided")
         os.Exit(1)
     }
-    if !IsValidDSN(os.Args[1]) { // Or unreachable -> This is a MUST CHECK!!!
+    if !IsValidDSN(os.Args[1]) { // Or unreachable -> This is a MUST CHECK!!! , We will need to make a fake request
         fmt.Println("Invalid defaultDSN")
         os.Exit(1)
     }
