@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
     "io"
-	"io/ioutil"
 	"net/http"
     "bytes"
     "regexp"
@@ -12,6 +11,7 @@ import (
     "encoding/json"
     "os"
     "net/url"
+    "time"
 )
 
 const Port = ":8080"
@@ -58,7 +58,7 @@ func IsValidDSN(testDSN string) bool {
     if (!IsValidURL(testDSN)) {
         return false
     }
-    // It is safe to use this loose DSN pattern as we already confirmed that this ^^^ is a valid URL
+    // It is safe to use this loose DSN pattern as we already confirmed that this is a valid URL
     matched, err := regexp.MatchString(`^https?:\/\/.+@.+\/[0-9]+$`, testDSN)
     if err != nil {
 		fmt.Println("IsValidDSN::Error compiling regex:", err)
@@ -201,12 +201,15 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 
 // Worker function to process requests
 func worker(id int, tasks <-chan RequestTask) {
-    var json string = ""
-    var componentName string = ""
-    var dsn string = defaultDSN
-    var targetURL string = ""
-    
+
     for task := range tasks {
+
+        var json string = ""
+        var componentName string = ""
+        var targetURL string = ""
+        // Cloning the defaultDSN into a local variable INSIDE THIS SCOPE
+        dsn := defaultDSN
+
         fmt.Printf("\n\nReceived request: %s %s\n", task.Method, task.URL)
 
         for key, values := range task.Header {
@@ -225,7 +228,7 @@ func worker(id int, tasks <-chan RequestTask) {
             json = string(task.Body)
         } else {
             // Read the decompressed data
-            decompressedData, err := ioutil.ReadAll(gzipReader)
+            decompressedData, err := io.ReadAll(gzipReader)
             if err != nil {
                 fmt.Println("Error reading decompressed data:", err)
             }
@@ -234,7 +237,7 @@ func worker(id int, tasks <-chan RequestTask) {
         }
         defer gzipReader.Close()
 
-        // TODO: In case that there is a DSN specified inside the body we need to remove that and later on update the new requesrt body 
+        // TODO: In case that there is a DSN specified inside the body we need to remove that and later on update the new request body 
         // >>> with the new JSON
 
         // Extracting the component name from tag `sentry_relay_component`
@@ -286,6 +289,18 @@ func worker(id int, tasks <-chan RequestTask) {
     }
 }
 
+func callFunctionEvery(interval time.Duration, function func()) {
+    ticker := time.NewTicker(interval)
+    go func() {
+        for {
+            select {
+            case <-ticker.C:
+                function()
+            }
+        }
+    }()
+}
+
 func loadConfigFile(configFileName string) bool {
     configFile, err := os.Open(configFileName)
     if err != nil {
@@ -295,7 +310,7 @@ func loadConfigFile(configFileName string) bool {
     defer configFile.Close()
 
     // Read the file content
-    byteValue, err := ioutil.ReadAll(configFile)
+    byteValue, err := io.ReadAll(configFile)
     if err != nil {
         fmt.Println("Error reading config file content: ", err)
         return false
@@ -310,7 +325,13 @@ func loadConfigFile(configFileName string) bool {
     }
 
     ComponentToDSNMapping = config.Mapping
+    fmt.Println("ComponentToDSNMapping" , ComponentToDSNMapping)
     return true
+}
+
+func periodicFunction() {
+    loadConfigFile(configFilePath)
+    fmt.Println("loadConfigFile called at: ", time.Now())
 }
 
 func main() {
@@ -326,6 +347,7 @@ func main() {
         fmt.Println("Error loading config file")
         os.Exit(1)
     }
+    fmt.Println("Initial config file was loaded")
     defaultDSN = os.Args[1]
     configFilePath = os.Args[2]
 
@@ -353,6 +375,9 @@ func main() {
         }
         requestChan <- task
     })
+
+    // Call periodicFunction every 1 minute without blocking.
+    callFunctionEvery(2*time.Minute, periodicFunction)
 
     // Start the HTTP server on "$Port"
     fmt.Println("Server listening on port " + Port)

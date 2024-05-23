@@ -3,6 +3,7 @@
         "A" : "https://133008b01af043a021a841977bf7daae@o87286.ingest.us.sentry.io/4507274024058880",
         "B" : "https://b338268c4c61a9d5096d311a432f2979@o87286.ingest.us.sentry.io/4507274029236224",
         "C" : "somekingofaweirdurl",
-        "D" : "http://www.google.com"
+        "D" : "http://www.google.com",
+        "JS" : "https://5632c5c8b6fec3c898022adb534f03ba@o87286.ingest.us.sentry.io/4507268303880192"
     }
 }
