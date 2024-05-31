@@ -12,6 +12,7 @@ import (
     "os"
     "net/url"
     "time"
+    "reflect"
 )
 
 const Port = ":8080"
@@ -24,6 +25,15 @@ type RequestTask struct {
     RequestURI string
     Header map[string][]string
     Writer http.ResponseWriter
+}
+
+// type Tags struct {
+//     SentryRelayComponent string `json:"sentry_relay_component"`
+// }
+
+type Event struct {
+    Tags map[string]string
+    //Tags Tags `json:"tags"`
 }
 
 var defaultDSN string = ""
@@ -155,6 +165,23 @@ func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
     return sentryURL
 }
 
+// Function to check if a field exists in a struct
+func fieldExists(object interface{}, fieldName string) bool {
+    // Get the reflection type of the object
+    t := reflect.TypeOf(object)
+
+    // Check if the object is a pointer and get the element type
+    if t.Kind() == reflect.Ptr {
+        t = t.Elem()
+    }
+
+    // Check if the field exists in the struct
+    if _, ok := t.FieldByName(fieldName); ok {
+        return true
+    }
+    return false
+}
+
 func getSentryAuth(header map[string][]string) string {
     if len(header["X-Sentry-Auth"]) == 0 {
         return ""
@@ -193,7 +220,7 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
 	resp, err := client.Do(newReq)
 	if err != nil {
 		http.Error(w, "Failed to forward request", http.StatusInternalServerError)
-        // TODO: If it was sent for a specific component and failed, retry to the default DSN
+        // TODO: If it was sent for a specific component and failed, retry to the default DSN - Nice to have
 		return
 	}
     fmt.Println("Forwarded request response", resp)
@@ -205,7 +232,7 @@ func worker(id int, tasks <-chan RequestTask) {
 
     for task := range tasks {
 
-        var json string = ""
+        var jsonBody string = ""
         var componentName string = ""
         var targetURL string = ""
         // Cloning the defaultDSN into a local variable INSIDE THIS SCOPE
@@ -227,7 +254,7 @@ func worker(id int, tasks <-chan RequestTask) {
         if err != nil {
             fmt.Printf("Body received raw, not gzipped")
             fmt.Printf("Body: %s\n", string(task.Body))
-            json = string(task.Body)
+            jsonBody = string(task.Body)
         } else {
             // Read the decompressed data
             decompressedData, err := io.ReadAll(gzipReader)
@@ -235,31 +262,41 @@ func worker(id int, tasks <-chan RequestTask) {
                 fmt.Println("Error reading decompressed data:", err)
             }
             fmt.Println("Decompressed data:", string(decompressedData))
-            json = string(decompressedData)
+            jsonBody = string(decompressedData)
         }
         defer gzipReader.Close()
 
         // TODO: In case that there is a DSN specified inside the body we need to remove that and later on update the new request body 
         // >>> with the new JSON
 
-        // Extracting the component name from tag `sentry_relay_component`
-        re, err := regexp.Compile(componentNamePattern)
-        if err != nil {
-            fmt.Println("Couldn't compile component name regex matcher " + componentNamePattern + " ", err)
-        } else {
-            matches := re.FindStringSubmatch(json)
-            if matches != nil && len(matches) > 1 {
-                componentName = matches[1]
-                fmt.Println("Extracted value:", componentName)
-                if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidDSN(ComponentToDSNMapping[componentName])) {
-                    dsn = ComponentToDSNMapping[componentName]
-                } else {
-                    fmt.Println("the DSN for component " + componentName + " is missing or invalid")
+        jsonStrings := strings.Split(jsonBody, "\n")
+        fmt.Println("\n\n\n\n")
+        fmt.Println(len(jsonStrings))
+        fmt.Println("\n\n\n\n")
+
+        var event Event
+        
+        for index, value := range jsonStrings {
+            err = json.Unmarshal([]byte(value), &event)
+            if err == nil {
+                fmt.Printf("\n\n Index: %d, Value: %s\n\n", index, value)
+                if (len(event.Tags[componentTagName]) > 0) {
+                    componentName = event.Tags[componentTagName]
+                    break
                 }
+            }   
+        }
+
+        fmt.Println("\n\n componentName is: ", componentName)
+
+        if componentName != "" { // Not allowing "" as a valid component name
+            if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidDSN(ComponentToDSNMapping[componentName])) {
+                dsn = ComponentToDSNMapping[componentName]
             } else {
-                fmt.Println(componentTagName + " tag doesn't exists")
+                fmt.Println("the DSN for component " + componentName + " is missing or invalid")
             }
         }
+        
         fmt.Println("Past getting the component name")
 
         // getting the Sentry Auth Header
@@ -275,7 +312,7 @@ func worker(id int, tasks <-chan RequestTask) {
         fmt.Println("Past constructSentryURL")
 
         if !IsValidURL(targetURL) {
-            fmt.Println("targetURL is invalid, dropping request %s %s %s\n", task.Method, task.URL, json)
+            fmt.Println("targetURL is invalid, dropping request %s %s %s\n", task.Method, task.URL, jsonBody)
             continue
         }
         
@@ -327,13 +364,13 @@ func loadConfigFile(configFileName string) bool {
     }
 
     ComponentToDSNMapping = config.Mapping
-    fmt.Println("ComponentToDSNMapping" , ComponentToDSNMapping)
+    //fmt.Println("ComponentToDSNMapping" , ComponentToDSNMapping)
     return true
 }
 
 func periodicFunction() {
     loadConfigFile(configFilePath)
-    fmt.Println("loadConfigFile called at: ", time.Now())
+    //fmt.Println("loadConfigFile called at: ", time.Now())
 }
 
 func main() {
