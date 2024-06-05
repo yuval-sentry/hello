@@ -1,4 +1,4 @@
-# Sentry Relay Proxy
+# Sentry Tag Name To DSN Multiplexer
 
 This repository contains a Sentry Relay Proxy written in Go. The proxy forwards requests to Sentry, dynamically routing them based on the specified component tags.
 
@@ -63,6 +63,7 @@ Create a configuration file in JSON format to map components to their respective
         "componentB": "https://examplePublicKey@o0.ingest.sentry.io/1"
     }
 }
+```
 
 ## Usage
 Run the proxy with the following command:
