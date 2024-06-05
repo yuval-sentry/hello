@@ -116,7 +116,6 @@ func generateSentryURLParams(authHeaderOrRequestURL string) string {
 }
 
 func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
-    fmt.Println("constructSentryURL::Received DSN: ", dsn)
     
     var url string = ""
     var publicKey string = ""
