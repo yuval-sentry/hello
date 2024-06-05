@@ -71,6 +71,7 @@ func IsValidDSN(testDSN string) bool {
     return matched
 }
 
+// See docs: https://develop.sentry.dev/sdk/overview/#authentication
 func generateSentryURLParams(authHeaderOrRequestURL string) string {
     if (authHeaderOrRequestURL == "") {
         return ""
@@ -177,7 +178,7 @@ func ModifyRequestHeaders(header map[string][]string) {
 
 // Taking the received request object, creating a new request from it and sending it to the target url
 func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers map[string][]string) {
-	// TODO: In order to support Sessions and Session Replay, these datamodels will need to be extracted from the envelope 
+	// TODO: Sessions and Session Replay will need to be extracted from the envelope 
     //        and be sent separately to the default project in a new envelope
 
 	// Create a new request based on the original request with the modified headers
