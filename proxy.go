@@ -12,7 +12,7 @@ import (
     "os"
     "net/url"
     "time"
-    "reflect"
+    "strconv"
 )
 
 const Port = ":8080"
@@ -27,17 +27,14 @@ type RequestTask struct {
     Writer http.ResponseWriter
 }
 
-// type Tags struct {
-//     SentryRelayComponent string `json:"sentry_relay_component"`
-// }
-
 type Event struct {
     Tags map[string]string
-    //Tags Tags `json:"tags"`
 }
 
 var defaultDSN string = ""
 var configFilePath  string = ""
+// Number of worker goroutines
+var numWorkers int = 15
 
 type Config struct {
     Mapping map[string]string `json:"mapping"`
@@ -48,12 +45,7 @@ var ComponentToDSNMapping map[string]string
 // Channel to forward request details
 var requestChan = make(chan RequestTask)
 
-// Number of worker goroutines
-const numWorkers = 15
-
 const componentTagName = "sentry_relay_component"
-// other options for this pattern : sentry_relay_component"\s?:\s?"([^"]+) or sentry_relay_component"\s*:\s*"([^"]+)
-const componentNamePattern = `"sentry_relay_component":"([^"]+)"`
 
 // IsValidURL checks if a given URL string is valid.
 func IsValidURL(testURL string) bool {
@@ -130,7 +122,7 @@ func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
     var hostPathProject = ""
     var hostPath string = ""
     var projectId string = ""
-    var endPoint string = "envelope" // TODO: Extract endpoint from URL
+    var endPoint string = "envelope"
     
     parts := strings.Split(dsn, "//")
     if (len(parts) > 1) {
@@ -160,26 +152,7 @@ func constructSentryURL(dsn string, authHeaderOrRequestURL string) string {
     authQueryParams := generateSentryURLParams(authHeaderOrRequestURL)
     sentryURL = sentryURL + "&" + authQueryParams
 
-    fmt.Println("constructSentryURL:: return result sentryURL : ", sentryURL)
-
     return sentryURL
-}
-
-// Function to check if a field exists in a struct
-func fieldExists(object interface{}, fieldName string) bool {
-    // Get the reflection type of the object
-    t := reflect.TypeOf(object)
-
-    // Check if the object is a pointer and get the element type
-    if t.Kind() == reflect.Ptr {
-        t = t.Elem()
-    }
-
-    // Check if the field exists in the struct
-    if _, ok := t.FieldByName(fieldName); ok {
-        return true
-    }
-    return false
 }
 
 func getSentryAuth(header map[string][]string) string {
@@ -189,7 +162,6 @@ func getSentryAuth(header map[string][]string) string {
     if len(header["X-Sentry-Auth"][0]) == 0 {
         return ""
     }
-    fmt.Println("header[x]", header["X-Sentry-Auth"][0])
     return header["X-Sentry-Auth"][0]
 }
 
@@ -205,7 +177,8 @@ func ModifyRequestHeaders(header map[string][]string) {
 
 // Taking the received request object, creating a new request from it and sending it to the target url
 func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers map[string][]string) {
-	// TODO: Sometimes an envelope will contain more than one event type, we will probably need to split each event type into a different envelope
+	// TODO: In order to support Sessions and Session Replay, these datamodels will need to be extracted from the envelope 
+    //        and be sent separately to the default project in a new envelope
 
 	// Create a new request based on the original request with the modified headers
 	newReq, err := http.NewRequest("POST", target, bytes.NewReader(body))
@@ -223,7 +196,6 @@ func ForwardRequest(w http.ResponseWriter, target string, body []byte, headers m
         // TODO: If it was sent for a specific component and failed, retry to the default DSN - Nice to have
 		return
 	}
-    fmt.Println("Forwarded request response", resp)
 	defer resp.Body.Close()
 }
 
@@ -238,22 +210,11 @@ func worker(id int, tasks <-chan RequestTask) {
         // Cloning the defaultDSN into a local variable INSIDE THIS SCOPE
         dsn := defaultDSN
 
-        fmt.Printf("\n\nReceived request: %s %s\n", task.Method, task.URL)
-
-        for key, values := range task.Header {
-            for _, value := range values {
-                fmt.Printf("\t%s: %s\n", key, value)
-            }
-        }
-
         // Checking if the body is encrypted
         reader := bytes.NewReader(task.Body)
         //Create a gzip reader to decompress the data
-        // TODO: support more compression types and encapsulate this entire logic in a separate function
         gzipReader, err := gzip.NewReader(reader)
         if err != nil {
-            fmt.Printf("Body received raw, not gzipped")
-            fmt.Printf("Body: %s\n", string(task.Body))
             jsonBody = string(task.Body)
         } else {
             // Read the decompressed data
@@ -261,33 +222,25 @@ func worker(id int, tasks <-chan RequestTask) {
             if err != nil {
                 fmt.Println("Error reading decompressed data:", err)
             }
-            fmt.Println("Decompressed data:", string(decompressedData))
             jsonBody = string(decompressedData)
         }
         defer gzipReader.Close()
 
-        // TODO: In case that there is a DSN specified inside the body we need to remove that and later on update the new request body 
-        // >>> with the new JSON
-
         jsonStrings := strings.Split(jsonBody, "\n")
-        fmt.Println("\n\n\n\n")
-        fmt.Println(len(jsonStrings))
-        fmt.Println("\n\n\n\n")
 
         var event Event
         
-        for index, value := range jsonStrings {
+        for _, value := range jsonStrings {
             err = json.Unmarshal([]byte(value), &event)
             if err == nil {
-                fmt.Printf("\n\n Index: %d, Value: %s\n\n", index, value)
-                if (len(event.Tags[componentTagName]) > 0) {
-                    componentName = event.Tags[componentTagName]
-                    break
+                if event.Tags != nil {
+                    if _, exists := event.Tags[componentTagName]; exists {
+                        componentName = event.Tags[componentTagName]
+                        break
+                    }
                 }
             }   
         }
-
-        fmt.Println("\n\n componentName is: ", componentName)
 
         if componentName != "" { // Not allowing "" as a valid component name
             if (len(ComponentToDSNMapping[componentName]) > 0 && IsValidDSN(ComponentToDSNMapping[componentName])) {
@@ -296,12 +249,9 @@ func worker(id int, tasks <-chan RequestTask) {
                 fmt.Println("the DSN for component " + componentName + " is missing or invalid")
             }
         }
-        
-        fmt.Println("Past getting the component name")
 
         // getting the Sentry Auth Header
         sentryAuth := getSentryAuth(task.Header)
-        fmt.Println("Past getSentryAuth")
 
         // constructing a new request url based on DSN and sentry auth data
         if sentryAuth == "" {
@@ -309,7 +259,6 @@ func worker(id int, tasks <-chan RequestTask) {
         } else {
             targetURL = constructSentryURL(dsn, sentryAuth)
         }
-        fmt.Println("Past constructSentryURL")
 
         if !IsValidURL(targetURL) {
             fmt.Println("targetURL is invalid, dropping request %s %s %s\n", task.Method, task.URL, jsonBody)
@@ -318,13 +267,9 @@ func worker(id int, tasks <-chan RequestTask) {
         
         // Removeing Sentry auth header from the request
         ModifyRequestHeaders(task.Header)
-        fmt.Println("Past ModifyRequestHeaders")
         
         // Forwarding the request to the right project
         ForwardRequest(task.Writer, targetURL, task.Body, task.Header)
-        fmt.Println("Past ForwardRequest")
-
-        fmt.Printf("\n\n\n\n\n\n\n\n")
     }
 }
 
@@ -364,18 +309,31 @@ func loadConfigFile(configFileName string) bool {
     }
 
     ComponentToDSNMapping = config.Mapping
-    //fmt.Println("ComponentToDSNMapping" , ComponentToDSNMapping)
     return true
 }
 
 func periodicFunction() {
     loadConfigFile(configFilePath)
-    //fmt.Println("loadConfigFile called at: ", time.Now())
 }
 
+func isNumWorkersValid(arg string) bool {
+    // Attempt to convert the string to an integer
+    num, err := strconv.Atoi(arg)
+    if err != nil {
+        fmt.Println("Conversion failed, numWorkers not a valid integer")
+        return false
+    }
+    if num < 1 || num > 100 {
+        fmt.Println("numWorkers must be a positive integer no greater than 100")
+        return false
+    }
+    numWorkers = num
+    return true
+} 
+
 func main() {
-    if len(os.Args) < 3 {
-        fmt.Println("Missing arguments. <defaultDSN> and <configFilePath> must be provided")
+    if len(os.Args) < 4 {
+        fmt.Println("Missing arguments. <defaultDSN>, <configFilePath> and <numberOfGoWorkers> must be provided")
         os.Exit(1)
     }
     if !IsValidDSN(os.Args[1]) { // Or unreachable -> This is a MUST CHECK!!! , We will need to make a fake request
@@ -386,11 +344,16 @@ func main() {
         fmt.Println("Error loading config file")
         os.Exit(1)
     }
+    if !isNumWorkersValid(os.Args[3]) {
+        fmt.Println("Invalid value/number of go workers")
+        os.Exit(1)
+    }
     fmt.Println("Initial config file was loaded")
     defaultDSN = os.Args[1]
     configFilePath = os.Args[2]
 
     //Start worker goroutines
+    fmt.Println("Number of go workers: ",numWorkers )
     for i := 0; i < numWorkers; i++ {
         go worker(i, requestChan)
     }
